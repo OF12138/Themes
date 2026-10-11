@@ -1,0 +1,11 @@
+{
+  "name": "Claude Cream",
+  "base": "light",
+  "overrides": {
+    "warning": "#DA7756",
+    "warningShimmer": "#EB9C80",
+    "userMessageBackground": "#EDECE8",
+    "userMessageBackgroundHover": "#F9F8F4",
+    "composerSidebarBackground": "#F3F2EE"
+  }
+}
