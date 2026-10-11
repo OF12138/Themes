@@ -173,7 +173,7 @@ function band(Box, Text, columns, surface) {
   }
   if (columns >= 60) {
     parts.push(Text({ dimColor: true, children: "   last turns " }));
-    parts.push(Text({ color: paint("permission", surface), children: chart() }));
+    parts.push(surface === "terminal" ? Text({ color: "permission", children: chart() }) : chartBoxes(Box, paint("permission", surface)));
     if (trend) {
       parts.push(Text({ dimColor: true, children: `  ${trend}` }));
     }
@@ -206,6 +206,18 @@ function chart() {
   const top = Math.max(...readings.map((r) => r.tokens), 1);
   const bars = readings.map((r) => BARS[Math.min(BARS.length - 1, Math.floor((r.tokens / top) * (BARS.length - 1)))]);
   return bars.join("");
+}
+
+// [local] Off the terminal the block glyphs come from whichever fonts hold them (the UI font has none;
+// Arial has only ▄ █, Segoe UI Symbol all eight), and those fonts' baselines differ, so the bars' bottoms
+// jump. Draw the bars as boxes instead, each a share of one row, bottom-aligned.
+function chartBoxes(Box, color) {
+  const top = Math.max(...readings.map((r) => r.tokens), 1);
+  const bars = readings.map((r) => {
+    const level = Math.min(BARS.length - 1, Math.floor((r.tokens / top) * (BARS.length - 1)));
+    return Box({ width: 1, height: `${((level + 1) / BARS.length) * 100}%`, backgroundColor: color });
+  });
+  return Box({ flexDirection: "row", alignItems: "flex-end", height: 1, children: bars });
 }
 
 function trendWord() {
