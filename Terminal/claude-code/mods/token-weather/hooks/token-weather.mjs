@@ -31,7 +31,7 @@ let readings = [];
 let compactAt = { window: 0, tokens: undefined };
 let fiveHour;
 let sevenDay;
-// [local] A compaction in flight: { startedAt, tokensBefore, chars, tick }, or undefined.
+// [local] A compaction in flight: { startedAt, now, tokensBefore, tick }, or undefined.
 let compacting;
 
 export function register(on) {
@@ -56,7 +56,8 @@ export function register(on) {
     return result;
   });
 
-  // [local] Compaction progress: elapsed time and the summary's streamed size, redrawn each second.
+  // [local] Compaction progress: elapsed time, redrawn each second (the summarizer's request is no turn,
+  // so turn.step never sees it). Afterwards the band shows the engine's count of what is left.
   on("session.compact", async ($, e, next) => {
     if (e.trigger === "precompute" || e.agentId) {
       return next(e);
@@ -67,7 +68,7 @@ export function register(on) {
         if (compacting) compacting.now = await $.clock.now();
         $.ui.invalidate("ui.render");
       });
-      compacting = { startedAt, now: startedAt, tokensBefore: readings[readings.length - 1]?.tokens, chars: 0, tick };
+      compacting = { startedAt, now: startedAt, tokensBefore: readings[readings.length - 1]?.tokens, tick };
       $.ui.invalidate("ui.render");
     } catch {
       // No progress band; the compaction itself goes on.
@@ -78,24 +79,18 @@ export function register(on) {
       $.ui.invalidate("ui.render");
     };
     return next(e).then(
-      (r) => (done(), r),
+      async (r) => {
+        done();
+        // $.session.usage() has no tokens until the next response; take the engine's count of what is left.
+        if (r && !r.skip && r.tokensAfter !== undefined) {
+          try {
+            await addReading($, r.tokensAfter, true);
+          } catch {}
+        }
+        return r;
+      },
       (err) => { done(); throw err; },
     );
-  });
-
-  // The summarizer's request runs in a fork of its own; count its text while a compaction is in flight.
-  on("turn.step", async function* ($, e, next) {
-    if (!compacting || !e.agentId) {
-      return yield* next(e);
-    }
-    const stream = next(e);
-    for await (const chunk of stream) {
-      if (compacting && (chunk.kind === "text" || chunk.kind === "thinking")) {
-        compacting.chars += (chunk.text ?? "").length;
-      }
-      yield chunk;
-    }
-    return await stream.result;
   });
 
   // [local] Drawn under the prompt, stacked on the engine's own hint line (`auto mode on ...`).
@@ -119,24 +114,34 @@ async function takeReading($) {
     // [local] Measure against the auto-compact threshold, looked up once per window size.
     if (compactAt.window !== context.window) {
       const usage = await $.session.usage({ breakdown: "summary" });
-      compactAt = { window: context.window, tokens: usage.context.breakdown?.autoCompactThreshold };
+      compactAt = { window: context.window, tokens: usage.context.breakdown?.autoCompactThreshold ?? context.window };
     }
-    const cap = compactAt.tokens ?? context.window;
-    const tokens = context.tokens ?? 0;
-    const percent = Math.round((tokens / cap) * 100);
     fiveHour = rateLimits?.find((r) => r.kind === "five_hour")?.percentUsed;
     sevenDay = rateLimits?.find((r) => r.kind === "seven_day")?.percentUsed;
-    // The session.start reading is 0 before any response; drop it once real readings arrive.
-    readings = readings.filter((r) => r.tokens > 0);
-    readings.push({ tokens, window: cap, percent });
-    if (readings.length > HISTORY) {
-      readings = readings.slice(-HISTORY);
+    // [local] Right after a compaction there are no tokens until the next response: keep the compacted reading.
+    if (context.tokens === undefined && readings.length > 0) {
+      return;
     }
-    $.ui.invalidate("ui.render");
-    await $.store.set("readings", { sessionId: await $.session.id(), list: readings });
+    await addReading($, context.tokens ?? 0, false);
   } catch {
     // No reading this turn; the band keeps the last one.
   }
+}
+
+async function addReading($, tokens, compacted) {
+  const cap = compactAt.tokens ?? readings[readings.length - 1]?.window;
+  if (!cap) {
+    return;
+  }
+  const percent = Math.round((tokens / cap) * 100);
+  // The session.start reading is 0 before any response; drop it once real readings arrive.
+  readings = readings.filter((r) => r.tokens > 0);
+  readings.push({ tokens, window: cap, percent, compacted });
+  if (readings.length > HISTORY) {
+    readings = readings.slice(-HISTORY);
+  }
+  $.ui.invalidate("ui.render");
+  await $.store.set("readings", { sessionId: await $.session.id(), list: readings });
 }
 
 function band(Box, Text, columns) {
@@ -174,9 +179,6 @@ function compactingBand(Box, Text) {
     parts.push(Text({ dimColor: true, children: ` ${short(compacting.tokensBefore)} of context` }));
   }
   parts.push(Text({ children: `   ${seconds}s` }));
-  if (compacting.chars > 0) {
-    parts.push(Text({ dimColor: true, children: `   summary ↓ ${short(Math.round(compacting.chars / 4))} tokens` }));
-  }
   return Box({ flexDirection: "row", paddingLeft: 0, children: parts });
 }
 
@@ -195,9 +197,11 @@ function trendWord() {
   if (readings.length < 2) {
     return "";
   }
-  const delta = readings[readings.length - 1].tokens - readings[readings.length - 2].tokens;
-  if (delta > 0) return `▲ +${short(delta)} last turn`;
-  if (delta < 0) return `▼ ${short(-delta)} last turn`;
+  const now = readings[readings.length - 1];
+  const delta = now.tokens - readings[readings.length - 2].tokens;
+  const what = now.compacted ? "compacted" : "last turn";
+  if (delta > 0) return `▲ +${short(delta)} ${what}`;
+  if (delta < 0) return `▼ ${short(-delta)} ${what}`;
   return "";
 }
 

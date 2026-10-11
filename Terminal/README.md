@@ -49,6 +49,6 @@ The mod shows one line under the prompt:
 
 - The percent is measured against the auto-compact threshold, so 100% means compaction is due.
 - The context and `5h` figures are colored blue, orange or red by how much is used.
-- During a compaction the line shows elapsed time and the summary's streamed size instead.
+- During a compaction the line shows the elapsed time; afterwards it shows what is left and `▼ … compacted`.
 
 The mod is a fork of Anthropic's [Token Weather](https://github.com/anthropics/claude-code-playground) example (Apache-2.0, see `LICENSE`). Local changes are marked `// [local]`. It was built against Claude Code 2.1.296.
