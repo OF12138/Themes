@@ -96,12 +96,21 @@ export function register(on) {
   // [local] Drawn under the prompt, stacked on the engine's own hint line (`auto mode on ...`).
   on("ui.render", { component: "PromptHint" }, async ($, e, next) => {
     const engine = await next(e);
-    if (!compacting && readings.length === 0) {
+    if (e.surface !== "terminal" || (!compacting && readings.length === 0)) {
       return engine;
     }
     const { Box, Text } = $.ui.resolve(e);
-    const row = compacting ? compactingBand(Box, Text) : band(Box, Text, e.viewport?.columns ?? 80);
+    const row = compacting ? compactingBand(Box, Text, e.surface) : band(Box, Text, e.viewport?.columns ?? 80, e.surface);
     return Box({ flexDirection: "column", children: [engine, row] });
+  });
+
+  // [local] Other surfaces (the desktop app) draw no PromptHint row of ours: the band goes above the prompt there.
+  on("ui.render", { component: "AbovePrompt" }, async ($, e, next) => {
+    if (e.surface === "terminal" || e.props?.hasSurvey || (!compacting && readings.length === 0)) {
+      return next(e);
+    }
+    const { Box, Text } = $.ui.resolve(e);
+    return compacting ? compactingBand(Box, Text, e.surface) : band(Box, Text, e.props?.bodyColumns ?? 80, e.surface);
   });
 }
 
@@ -144,27 +153,27 @@ async function addReading($, tokens, compacted) {
   await $.store.set("readings", { sessionId: await $.session.id(), list: readings });
 }
 
-function band(Box, Text, columns) {
+function band(Box, Text, columns, surface) {
   const now = readings[readings.length - 1];
   const f = levelFor(now.percent);
   const trend = trendWord();
   // [local] No weather: the context percent itself carries the green/yellow/red.
   const parts = [
-    Text({ color: f.color, bold: true, children: `${now.percent}%` }),
+    Text({ color: paint(f.color, surface), bold: true, children: `${now.percent}%` }),
     Text({ children: " of context" }),
     Text({ dimColor: true, children: `  ${short(now.tokens)} / ${short(now.window)}` }),
   ];
   // [local] The 5h window colored by the same levels; 7d plain.
   if (fiveHour !== undefined) {
     parts.push(Text({ dimColor: true, children: "   5h " }));
-    parts.push(Text({ color: levelFor(fiveHour).color, bold: true, children: `${Math.round(fiveHour)}%` }));
+    parts.push(Text({ color: paint(levelFor(fiveHour).color, surface), bold: true, children: `${Math.round(fiveHour)}%` }));
   }
   if (sevenDay !== undefined) {
     parts.push(Text({ dimColor: true, children: `   7d ${Math.round(sevenDay)}%` }));
   }
   if (columns >= 60) {
     parts.push(Text({ dimColor: true, children: "   last turns " }));
-    parts.push(Text({ color: "permission", children: chart() }));
+    parts.push(Text({ color: paint("permission", surface), children: chart() }));
     if (trend) {
       parts.push(Text({ dimColor: true, children: `  ${trend}` }));
     }
@@ -172,14 +181,20 @@ function band(Box, Text, columns) {
   return Box({ flexDirection: "row", paddingLeft: 0, children: parts });
 }
 
-function compactingBand(Box, Text) {
+function compactingBand(Box, Text, surface) {
   const seconds = Math.round((compacting.now - compacting.startedAt) / 1000);
-  const parts = [Text({ color: "claude", bold: true, children: "Compacting" })];
+  const parts = [Text({ color: paint("claude", surface), bold: true, children: "Compacting" })];
   if (compacting.tokensBefore) {
     parts.push(Text({ dimColor: true, children: ` ${short(compacting.tokensBefore)} of context` }));
   }
   parts.push(Text({ children: `   ${seconds}s` }));
   return Box({ flexDirection: "row", paddingLeft: 0, children: parts });
+}
+
+// [local] Theme keys are the terminal's (claude-cream); elsewhere the same colors as hex.
+const HEX = { permission: "#5769F7", warning: "#DA7756", claude: "#DA7756" };
+function paint(color, surface) {
+  return surface === "terminal" ? color : (HEX[color] ?? color);
 }
 
 function levelFor(percent) {
